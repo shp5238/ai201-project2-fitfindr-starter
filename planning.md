@@ -64,17 +64,16 @@ This tool generates a shareable fit-card caption that highlights the new thrifte
 
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `new_item` (dict): The selected listing object from `search_listings`.
-- `wardrobe` (dict): A wardrobe payload conforming to the schema in `data/wardrobe_schema.json`, containing an `items` list of pieces with `id`, `name`, `category`, `colors`, `style_tags`, and optional `notes`.
-
+- `outfit_suggestion` (str): The natural-language styling recommendation returned by `suggest_outfit`.
+- `new_item` (dict): The selected listing object from `search_listings`, including at minimum `title`, `price`, `platform`, `condition`, and `style_tags`.
 
 **What it returns:**
 <!-- Describe the return value -->
-An outfit suggestion string in natural language of which wardrobe pieces pair best with the new item and how to style them.
+A shareable caption string (2–4 sentences) that names the item, its source platform and price, and weaves in the outfit suggestion as a style note. Example: "Thrifted this faded band tee from Depop for $22 — paired it with wide-leg jeans and chunky Docs for full 90s energy. Sustainable and styled."
 
 **What happens if it fails or returns nothing:**
 <!-- What should the agent do if the outfit data is incomplete? -->
-If the wardrobe is empty or no suitable outfit can be suggested, the agent returns a friendly fallback that explains it needs more wardrobe data and suggests the user add wardrobe items.
+If `outfit_suggestion` is empty or `new_item` is missing required fields, the agent responds: "I wasn’t able to generate a fit card because the outfit or item data is incomplete. Make sure your search and styling steps completed successfully." It does not return a partial caption.
 
 ---
 
@@ -89,9 +88,35 @@ If the wardrobe is empty or no suitable outfit can be suggested, the agent retur
 **How does your agent decide which tool to call next?**
 <!-- Describe the logic your planning loop uses. What does it look at? What conditions change its behavior? How does it know when it's done? -->
 
-The agent starts by parsing the user's request for a product description, size, and budget. It calls `search_listings` first because shopping must succeed before styling. If `search_listings` returns at least one result, the agent selects the top match and calls `suggest_outfit` with that item and the user's wardrobe. If the outfit suggestion succeeds, it then calls `create_fit_card` to generate the social caption and finishes.
+**Step 1 — Parse query**
+Extract `description` (str), `size` (str), and `max_price` (float) from the user message. These become the inputs to the first tool call.
 
-The loop is done once the app has either returned a final answer with listing, styling, and fit card, or returned an error/refinement response for an earlier failure.
+**Step 2 — Call `search_listings(description, size, max_price)`**
+- If `results == []` (empty list):
+  → Set `session.error = "No listings found for '{description}' in size {size} under ${max_price}. Try broadening your search — remove the size filter or raise your budget."`
+  → **Return early.** Do not call `suggest_outfit` or `create_fit_card`.
+- If `len(results) >= 1`:
+  → Set `session.selected_item = results[0]`
+  → Proceed to Step 3.
+
+**Step 3 — Call `suggest_outfit(session.selected_item, wardrobe)`**
+- If `wardrobe["items"] == []` (empty wardrobe) OR the tool returns `None` or an empty string:
+  → Set `session.error = "Your wardrobe is empty. Add a few items (like pants, shoes, or a jacket) so I can suggest styling combinations."`
+  → **Return early.** Do not call `create_fit_card`.
+- If `outfit_suggestion` is a non-empty string:
+  → Set `session.outfit_suggestion = outfit_suggestion`
+  → Proceed to Step 4.
+
+**Step 4 — Call `create_fit_card(session.outfit_suggestion, session.selected_item)`**
+- If `outfit_suggestion` is empty or `selected_item` is missing required fields (`title`, `price`, `platform`):
+  → Set `session.error = "Couldn't generate a fit card — the outfit or item data is incomplete."`
+  → **Return early.**
+- If `fit_card` is a non-empty string:
+  → Set `session.fit_card = fit_card`
+  → Proceed to Step 5.
+
+**Step 5 — Return session**
+Return `session` containing `selected_item`, `outfit_suggestion`, and `fit_card`. The loop is complete.
 
 
 ---
@@ -119,9 +144,9 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
-| search_listings | No results match the query | |
-| suggest_outfit | Wardrobe is empty | |
-| create_fit_card | Outfit input is missing or incomplete | |
+| search_listings | No results match the query | "No listings found for '{description}' in size {size} under ${max_price}. Try broadening your search — remove the size filter or raise your budget." Agent stops and returns this message without calling suggest_outfit or create_fit_card. |
+| suggest_outfit | Wardrobe is empty | "Your wardrobe is empty. Add a few items (like pants, shoes, or a jacket) so I can suggest styling combinations." Agent stops and returns this message without calling create_fit_card. |
+| create_fit_card | Outfit input is missing or incomplete | "I wasn't able to generate a fit card because the outfit or item data is incomplete. Make sure your search and styling steps completed successfully." Agent returns this message; no partial caption is shown. |
 
 ---
 
@@ -138,20 +163,64 @@ For each tool, describe the specific failure mode you're handling and what the a
      You'll share this diagram with an AI tool when asking it to implement
      the planning loop and each individual tool. -->
 
-```mermaid
-flowchart TD
-    U[User query] --> P[Planning Loop]
-    P --> S1[search_listings(description, size, max_price)]
-    S1 -->|results=[]| E1[ERROR: "No listings found..." → return]
-    S1 -->|results=[item,...]| T1[Session: selected_item = results[0]]
-    T1 --> S2[suggest_outfit(selected_item, wardrobe)]
-    S2 --> T2[Session: outfit_suggestion = "..."]
-    T2 --> S3[create_fit_card(outfit_suggestion, selected_item)]
-    S3 --> T3[Session: fit_card = "..."]
-    T3 --> O[Return session]
 ```
-
-This architecture reflects the linear flow from user query through the planning loop and tool chain, with the search failure path returning before outfit creation as an early exit.
+User query ("vintage graphic tee, size M, under $30")
+    │
+    ▼
+Planning Loop
+    │  parse → description="vintage graphic tee", size="M", max_price=30.0
+    │
+    ├─► search_listings(description, size, max_price)
+    │       │
+    │       ├── results=[]
+    │       │       │
+    │       │       ▼
+    │       │   [ERROR] "No listings found for 'vintage graphic tee'   ◄─── early return
+    │       │            in size M under $30. Try broadening your
+    │       │            search — remove size or raise budget."
+    │       │
+    │       └── results=[item, ...]
+    │               │  (list of listing dicts with id, title, price,
+    │               │   platform, size, style_tags, condition, colors)
+    │               ▼
+    │           Session: selected_item = results[0]
+    │               │
+    ├─► suggest_outfit(selected_item, wardrobe)
+    │       │  selected_item → dict from session
+    │       │  wardrobe     → {"items": [...]} from user profile
+    │       │
+    │       ├── wardrobe["items"]=[] OR returns None/""
+    │       │       │
+    │       │       ▼
+    │       │   [ERROR] "Your wardrobe is empty. Add pants, shoes,     ◄─── early return
+    │       │            or a jacket so I can suggest combinations."
+    │       │
+    │       └── outfit_suggestion="Pair with wide-leg jeans and..."
+    │               │
+    │               ▼
+    │           Session: outfit_suggestion = "Pair with wide-leg jeans..."
+    │               │
+    ├─► create_fit_card(outfit_suggestion, selected_item)
+    │       │  outfit_suggestion → str from session
+    │       │  selected_item    → dict from session
+    │       │
+    │       ├── outfit_suggestion="" OR selected_item missing title/price/platform
+    │       │       │
+    │       │       ▼
+    │       │   [ERROR] "Couldn't generate a fit card — outfit or      ◄─── early return
+    │       │            item data is incomplete."
+    │       │
+    │       └── fit_card="Thrifted this faded band tee from Depop..."
+    │               │
+    │               ▼
+    │           Session: fit_card = "Thrifted this faded band tee..."
+    │
+    ▼
+Return session { selected_item, outfit_suggestion, fit_card }
+    │
+    ▼
+User sees: listing details + styling suggestion + shareable caption
+```
 
 ---
 
@@ -170,7 +239,18 @@ This architecture reflects the linear flow from user query through the planning 
 
 **Milestone 3 — Individual tool implementations:**
 
+**search_listings:**
+I'll use Claude. I'll paste in the Tool 1 block from this file (inputs, return value, failure mode) and ask it to implement `search_listings(description, size, max_price)` using `load_listings()` from the data loader. I'll verify the output by checking that the generated code: (1) filters on all three parameters, (2) returns an empty list (not `None` or an exception) when nothing matches, and (3) returns full listing dicts with all required fields. I'll test it with three queries: one that matches at least one listing, one that matches nothing, and one with only `description` set (no size or price).
+
+**suggest_outfit:**
+I'll use Claude. I'll paste in the Tool 2 block (inputs, return value, failure mode) and the wardrobe schema from `data/wardrobe_schema.json`. I'll ask it to implement `suggest_outfit(new_item, wardrobe)` that matches style_tags and colors between the new item and wardrobe items to produce a natural-language recommendation. I'll verify the output: (1) returns a non-empty string when a compatible wardrobe item exists, and (2) returns the fallback message (not an exception) when wardrobe is empty. I'll test with a populated wardrobe, an empty wardrobe, and a wardrobe with no style overlap.
+
+**create_fit_card:**
+I'll use Claude. I'll paste in the Tool 3 block (corrected inputs: `outfit_suggestion` str and `new_item` dict, return value, failure mode) plus the example fit-card format from this file. I'll ask it to implement `create_fit_card(outfit_suggestion, new_item)` that produces a 2–4 sentence shareable caption. I'll verify: (1) output includes `title`, `price`, and `platform` from `new_item`, (2) references the outfit suggestion content, and (3) returns the error message (not `None`) when inputs are missing. I'll test with a complete input, a missing `platform` field, and an empty `outfit_suggestion`.
+
 **Milestone 4 — Planning loop and state management:**
+
+I'll use Claude. I'll paste in the Planning Loop section (the five numbered steps with all conditional branches), the Architecture diagram (the ASCII version above), and the State Management section. I'll ask it to implement the planning loop as a function that calls each tool in order, checks return values at each step, sets session state, and returns early with a specific error message on failure. Before using the generated code I'll verify: (1) the loop stops after `search_listings` when results are empty and does not call `suggest_outfit`, (2) the loop stops after `suggest_outfit` when wardrobe is empty and does not call `create_fit_card`, and (3) all three session keys (`selected_item`, `outfit_suggestion`, `fit_card`) are set on the full success path. I'll trace through the complete interaction example (below) manually against the generated code to confirm outputs match.
 
 ---
 
@@ -180,23 +260,65 @@ Write out what a full user interaction looks like from start to finish — tool 
 
 **Example user query:** "I'm looking for a vintage graphic tee under $30. I mostly wear baggy jeans and chunky sneakers. What's out there and how would I style it?"
 
-**Step 1:**
-<!-- What does the agent do first? Which tool is called? With what input? -->
-The agent will first call search_listings("vintage graphic tee", max_price=30.0).
+**Step 1 — search_listings is called**
 
-**Step 2:**
-<!-- What happens next? What was returned from step 1? What tool is called now? -->
-Step 1 returned the matching listings sorted by relevance. FitFindr (the agent) picks the top result: "Faded Band Tee — $22, Depop, Good condition." 
-Then the agent calls suggest_outfit(new_item=top_result, wardrobe=example_wardrobe).
+Tool called: `search_listings(description=”vintage graphic tee”, size=”M”, max_price=30.0)`
 
-**Step 3:**
-<!-- Continue until the full interaction is complete -->
-suggest_outfit returns a styling recommendation like: "Pair this with your wide-leg jeans and platform Docs for a classic 90s grunge look. Roll the sleeves once and tuck the front corner slightly for shape." 
+`search_listings` scans the listings dataset and returns two matches ranked by relevance:
+```
+results = [
+  { “id”: “dp-041”, “title”: “Faded Band Tee”, “category”: “tops”, “size”: “M”,
+    “price”: 22.0, “platform”: “Depop”, “condition”: “Good”,
+    “colors”: [“black”, “grey”], “style_tags”: [“vintage”, “grunge”, “graphic”],
+    “brand”: “Unknown”, “description”: “Worn-in black tee with faded band print” },
+  { “id”: “pg-088”, “title”: “90s Graphic Tee”, “category”: “tops”, “size”: “M”,
+    “price”: 28.0, “platform”: “Poshmark”, “condition”: “Like New”,
+    “colors”: [“white”], “style_tags”: [“vintage”, “streetwear”, “graphic”],
+    “brand”: “Hanes”, “description”: “Clean white tee with retro logo print” }
+]
+```
+Since `results` is not empty, the planning loop sets `session.selected_item = results[0]` (the Faded Band Tee) and proceeds.
 
-The agent then calls create_fit_card(outfit=that_suggestion, new_item=top_result)
-which returns the outfit suggestion to the user. 
+**Step 2 — suggest_outfit is called**
+
+Tool called: `suggest_outfit(new_item=session.selected_item, wardrobe=user_wardrobe)`
+
+where `user_wardrobe` is:
+```
+{ “items”: [
+    { “id”: “w-01”, “name”: “Wide-leg jeans”, “category”: “bottoms”,
+      “colors”: [“blue”], “style_tags”: [“baggy”, “casual”, “90s”] },
+    { “id”: “w-02”, “name”: “Chunky platform sneakers”, “category”: “shoes”,
+      “colors”: [“white”], “style_tags”: [“streetwear”, “chunky”, “90s”] }
+  ]
+}
+```
+
+`suggest_outfit` matches `style_tags` [“vintage”, “grunge”] on the tee against [“baggy”, “90s”] on the jeans and [“streetwear”, “90s”] on the sneakers, and returns:
+
+`”Pair this faded band tee with your wide-leg jeans and chunky platform sneakers for a full 90s grunge look. Roll the sleeves once and tuck the front corner slightly for shape.”`
+
+Since the result is a non-empty string, the planning loop sets `session.outfit_suggestion` to that string and proceeds.
+
+**Step 3 — create_fit_card is called**
+
+Tool called: `create_fit_card(outfit_suggestion=session.outfit_suggestion, new_item=session.selected_item)`
+
+`create_fit_card` uses `title=”Faded Band Tee”`, `price=22.0`, `platform=”Depop”`, and the outfit suggestion to produce:
+
+`”Thrifted this faded band tee from Depop for $22 — paired it with wide-leg jeans and chunky platform sneakers for full 90s grunge energy. Sustainable and styled. 🖤”`
+
+The planning loop sets `session.fit_card` to that string. All three session keys are now set; the loop returns `session`.
 
 **Final output to user:**
-<!-- What does the user actually see at the end? -->
-The user sees the combined response that includes the selected listing, how to style it, and a shareable caption, for example:
-“Faded Band Tee — $22, Depop, Good condition.”
+
+```
+Found: Faded Band Tee — $22 on Depop (Good condition, size M)
+
+How to wear it: Pair this faded band tee with your wide-leg jeans and chunky platform
+sneakers for a full 90s grunge look. Roll the sleeves once and tuck the front corner
+slightly for shape.
+
+Fit card: Thrifted this faded band tee from Depop for $22 — paired it with wide-leg
+jeans and chunky platform sneakers for full 90s grunge energy. Sustainable and styled. 🖤
+```
