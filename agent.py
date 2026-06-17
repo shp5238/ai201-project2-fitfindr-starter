@@ -18,6 +18,8 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
 
 
@@ -92,9 +94,63 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # ── Step 2: Parse query ───────────────────────────────────────────────────
+    # Extract max_price: "under $30", "$30", "under 30"
+    price_match = re.search(r"(?:under\s*)?\$(\d+(?:\.\d+)?)|under\s+(\d+(?:\.\d+)?)", query, re.I)
+    max_price = None
+    if price_match:
+        raw = price_match.group(1) or price_match.group(2)
+        max_price = float(raw)
+
+    # Extract size: "size M", "in XS", or standalone token matching common sizes
+    size_match = re.search(
+        r"\bsize\s+([A-Z0-9/]+)\b"
+        r"|\bin\s+(XXS|XS|S|M|L|XL|XXL|XXXL|[0-9]+(?:\.[05])?)\b"
+        r"|\b(XXS|XS|XL|XXL|XXXL)\b",  # unambiguous standalone tokens only
+        query,
+        re.I,
+    )
+    size = None
+    if size_match:
+        size = next(g for g in size_match.groups() if g is not None)
+
+    # Description: strip price/size tokens to get clean keyword string
+    description = query
+    if price_match:
+        description = description[:price_match.start()] + description[price_match.end():]
+    if size_match:
+        description = description[:size_match.start()] + description[size_match.end():]
+    description = re.sub(r"\b(size|in|under|looking for|i want|find me|a|an|the)\b", " ", description, flags=re.I)
+    description = " ".join(description.split())
+
+    session["parsed"] = {"description": description, "size": size, "max_price": max_price}
+
+    # ── Step 3: Search ────────────────────────────────────────────────────────
+    results = search_listings(description, size=size, max_price=max_price)
+    session["search_results"] = results
+
+    if not results:
+        size_str = f" in size {size}" if size else ""
+        price_str = f" under ${max_price:.0f}" if max_price else ""
+        session["error"] = (
+            f"No listings found for '{description}'{size_str}{price_str}. "
+            "Try broadening your search — remove the size filter or raise your budget."
+        )
+        return session
+
+    # ── Step 4: Select top result ─────────────────────────────────────────────
+    session["selected_item"] = results[0]
+
+    # ── Step 5: Suggest outfit ────────────────────────────────────────────────
+    outfit = suggest_outfit(session["selected_item"], wardrobe)
+    session["outfit_suggestion"] = outfit
+
+    # ── Step 6: Create fit card ───────────────────────────────────────────────
+    session["fit_card"] = create_fit_card(outfit, session["selected_item"])
+
+    # ── Step 7: Return ────────────────────────────────────────────────────────
     return session
 
 
