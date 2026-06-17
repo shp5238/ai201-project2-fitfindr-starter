@@ -89,12 +89,27 @@ If the wardrobe is empty or no suitable outfit can be suggested, the agent retur
 **How does your agent decide which tool to call next?**
 <!-- Describe the logic your planning loop uses. What does it look at? What conditions change its behavior? How does it know when it's done? -->
 
+The agent starts by parsing the user's request for a product description, size, and budget. It calls `search_listings` first because shopping must succeed before styling. If `search_listings` returns at least one result, the agent selects the top match and calls `suggest_outfit` with that item and the user's wardrobe. If the outfit suggestion succeeds, it then calls `create_fit_card` to generate the social caption and finishes.
+
+The loop is done once the app has either returned a final answer with listing, styling, and fit card, or returned an error/refinement response for an earlier failure.
+
+
 ---
 
 ## State Management
 
 **How does information from one tool get passed to the next?**
 <!-- Describe how your agent stores and accesses state within a session. What data is tracked? How is it passed between tool calls? -->
+I think the session tracks three main pieces of state: `query_request`, `selected_listing`, and `outfit_suggestion`.
+
+- `query_request` stores the parsed user intent and search constraints.
+- `selected_listing` stores the top `search_listings` result.
+- `outfit_suggestion` stores the string returned by `suggest_outfit`.
+
+These values are passed sequentially: `search_listings` → `selected_listing` → `suggest_outfit` → `outfit_suggestion` → `create_fit_card`.
+
+If a step fails, the agent uses the current state to return a clear error message and does not advance further.
+
 
 ---
 
@@ -122,6 +137,21 @@ For each tool, describe the specific failure mode you're handling and what the a
      an embedded image or screenshot cannot be evaluated.
      You'll share this diagram with an AI tool when asking it to implement
      the planning loop and each individual tool. -->
+
+```mermaid
+flowchart TD
+    U[User query] --> P[Planning Loop]
+    P --> S1[search_listings(description, size, max_price)]
+    S1 -->|results=[]| E1[ERROR: "No listings found..." → return]
+    S1 -->|results=[item,...]| T1[Session: selected_item = results[0]]
+    T1 --> S2[suggest_outfit(selected_item, wardrobe)]
+    S2 --> T2[Session: outfit_suggestion = "..."]
+    T2 --> S3[create_fit_card(outfit_suggestion, selected_item)]
+    S3 --> T3[Session: fit_card = "..."]
+    T3 --> O[Return session]
+```
+
+This architecture reflects the linear flow from user query through the planning loop and tool chain, with the search failure path returning before outfit creation as an early exit.
 
 ---
 
