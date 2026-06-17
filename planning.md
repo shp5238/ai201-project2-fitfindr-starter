@@ -16,18 +16,21 @@ You must have at least 3 tools. The three required tools are listed — add any 
 
 **What it does:**
 <!-- Describe what this tool does in 1–2 sentences -->
+This tool searches the mock thrift marketplace dataset for listings that match the user’s request. It filters listings by description, title, category, size, price, condition, colors, brand, and platform, then returns matches ranked by relevance.
 
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `description` (str): ...
-- `size` (str): ...
-- `max_price` (float): ...
+- `description` (str): The user's item search terms, such as "vintage graphic tee" or "90s track jacket." This is matched against title, description, and style tags.
+- `size` (str): Desired size or fit, such as "M" or "US 7." This is matched against the listing's `size` field.
+- `max_price` (float): Maximum price threshold for the search.
 
 **What it returns:**
 <!-- Describe the return value — what fields does a result contain? -->
+It returns a list of matching listing dictionaries. Each result contains at least: `id`, `title`, `description`, `category`, `style_tags`, `size`, `condition`, `price`, `colors`, `brand`, and `platform`.
 
 **What happens if it fails or returns nothing:**
 <!-- What should the agent do if no listings match? -->
+If it fails or returns nothing because no listings match the query, the agent responds with a refinement suggestion and stops. It does not call `suggest_outfit` or `create_fit_card` on empty results.
 
 ---
 
@@ -35,17 +38,21 @@ You must have at least 3 tools. The three required tools are listed — add any 
 
 **What it does:**
 <!-- Describe what this tool does in 1–2 sentences -->
+This tool creates a styling recommendation for the selected new item using the user's wardrobe. It identifies complementary wardrobe pieces and suggests how to wear the item together.
 
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `new_item` (dict): ...
-- `wardrobe` (dict): ...
+- `new_item` (dict): The selected listing object from `search_listings`.
+- `wardrobe` (dict): A wardrobe payload conforming to the schema in `data/wardrobe_schema.json`, containing an `items` list of pieces with `id`, `name`, `category`, `colors`, `style_tags`, and optional `notes`.
+
 
 **What it returns:**
 <!-- Describe the return value -->
+It returns a natural-language outfit suggestion string describing which wardrobe pieces pair best with the new item and how to style them.
 
 **What happens if it fails or returns nothing:**
 <!-- What should the agent do if the wardrobe is empty or no outfit can be suggested? -->
+If the wardrobe is empty or no suitable outfit can be suggested, the agent returns a friendly fallback that explains it needs more wardrobe data and suggests the user add wardrobe items.
 
 ---
 
@@ -53,17 +60,21 @@ You must have at least 3 tools. The three required tools are listed — add any 
 
 **What it does:**
 <!-- Describe what this tool does in 1–2 sentences -->
+This tool generates a shareable fit-card caption that highlights the new thrifted item, where it was sourced, the price, and how it fits into the user’s existing style.
 
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `outfit` (str): ...
-- `new_item` (dict): ...
+- `new_item` (dict): The selected listing object from `search_listings`.
+- `wardrobe` (dict): A wardrobe payload conforming to the schema in `data/wardrobe_schema.json`, containing an `items` list of pieces with `id`, `name`, `category`, `colors`, `style_tags`, and optional `notes`.
+
 
 **What it returns:**
 <!-- Describe the return value -->
+An outfit suggestion string in natural language of which wardrobe pieces pair best with the new item and how to style them.
 
 **What happens if it fails or returns nothing:**
 <!-- What should the agent do if the outfit data is incomplete? -->
+If the wardrobe is empty or no suitable outfit can be suggested, the agent returns a friendly fallback that explains it needs more wardrobe data and suggests the user add wardrobe items.
 
 ---
 
@@ -141,12 +152,21 @@ Write out what a full user interaction looks like from start to finish — tool 
 
 **Step 1:**
 <!-- What does the agent do first? Which tool is called? With what input? -->
+The agent will first call search_listings("vintage graphic tee", max_price=30.0).
 
 **Step 2:**
 <!-- What happens next? What was returned from step 1? What tool is called now? -->
+Step 1 returned the matching listings sorted by relevance. FitFindr (the agent) picks the top result: "Faded Band Tee — $22, Depop, Good condition." 
+Then the agent calls suggest_outfit(new_item=top_result, wardrobe=example_wardrobe).
 
 **Step 3:**
 <!-- Continue until the full interaction is complete -->
+suggest_outfit returns a styling recommendation like: "Pair this with your wide-leg jeans and platform Docs for a classic 90s grunge look. Roll the sleeves once and tuck the front corner slightly for shape." 
+
+The agent then calls create_fit_card(outfit=that_suggestion, new_item=top_result)
+which returns the outfit suggestion to the user. 
 
 **Final output to user:**
 <!-- What does the user actually see at the end? -->
+The user sees the combined response that includes the selected listing, how to style it, and a shareable caption, for example:
+“Faded Band Tee — $22, Depop, Good condition.”
